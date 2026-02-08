@@ -29,7 +29,7 @@
     <div id="lock-info">Wake Lock: Inactive | Auto-Reset: 08:00 AM</div>
 
     <script>
-        const WEB_APP_URL = "https://script.google.com/macros/s/AKfycby5Sq23rw70AGXg0vB9u-VNlQAG-LiRLQk83nBbgJLQe9iNELn6M6cLme0kmKkzYrmW/exec"; 
+        const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwstcvIArs40YZzSQUFr3SP1yRJhdyFtOSFGucJu7pe33LAmd7iioHyoRgWLnJPvy4X/exec"; 
         
         const body = document.body;
         const statusDisplay = document.getElementById('status');
@@ -109,24 +109,28 @@
             }
         }
 
-        async function syncToSheet(tagText, action) {
+                async function syncToSheet(tagText, action) {
             let mapLink = "N/A";
             if ((action === "OUT" || action.includes("AUTO")) && breadcrumbs.length > 0) {
                 mapLink = "https://www.google.com/maps/dir/" + breadcrumbs.join("/");
             }
             
-            // Format Shift Start for the Sheet
             const startRaw = localStorage.getItem('shiftStarted');
             const startFormatted = startRaw ? new Date(startRaw).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'}) : "N/A";
-
+        
             const payload = { 
-                tagText, 
+                tagText: tagText, // <--- Ensure this is not blank
                 name: localStorage.getItem('userName'), 
                 shiftStarted: startFormatted,
-                action, 
+                action: action, 
                 location: mapLink
             };
-            fetch(WEB_APP_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
+        
+            fetch(WEB_APP_URL, { 
+                method: 'POST', 
+                mode: 'no-cors', 
+                body: JSON.stringify(payload) 
+            });
         }
 
         function updateUI(status, sub, bgColorClass) {
