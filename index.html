@@ -5,88 +5,150 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Shift Tracker Pro</title>
     <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#2ecc71">
     <style>
         body { transition: background-color 0.6s ease; background-color: #2ecc71; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; color: white; text-align: center; overflow: hidden; }
         .amber { background-color: #f39c12 !important; }
         .red { background-color: #e74c3c !important; }
-        #status { font-size: 2.2rem; font-weight: bold; margin-bottom: 10px; }
+        #status { font-size: 2.2rem; font-weight: bold; margin-bottom: 10px; padding: 0 20px; }
         #sub-status { font-size: 1.1rem; opacity: 0.9; margin-bottom: 30px; height: 1.2em; }
         #input-container { width: 100%; display: flex; flex-direction: column; align-items: center; }
         input { padding: 18px; font-size: 1.4rem; border-radius: 12px; border: none; margin-bottom: 20px; width: 85%; max-width: 350px; text-align: center; color: #333; }
-        button { padding: 20px 50px; font-size: 1.3rem; cursor: pointer; border: none; border-radius: 50px; background: white; color: #2ecc71; font-weight: bold; }
-        #accuracy-info { position: fixed; bottom: 40px; font-size: 0.8rem; opacity: 0.7; background: rgba(0,0,0,0.1); padding: 5px 15px; border-radius: 15px; }
-        #info { position: fixed; bottom: 15px; font-size: 0.7rem; opacity: 0.5; }
+        button { padding: 20px 50px; font-size: 1.3rem; cursor: pointer; border: none; border-radius: 50px; background: white; color: #2ecc71; font-weight: bold; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+        #lock-info { position: fixed; bottom: 15px; font-size: 0.75rem; opacity: 0.5; }
     </style>
 </head>
 <body>
 
     <div id="status">Welcome</div>
-    <div id="sub-status">Enter name to start shift</div>
+    <div id="sub-status">Enter name to begin</div>
 
     <div id="input-container">
         <input type="text" id="userName" placeholder="Type Name Here..." autocomplete="off">
         <button id="startBtn">Begin Shift</button>
     </div>
 
-    <div id="accuracy-info">GPS: Idle</div>
-    <div id="info">Tracking: Login to 08:00am</div>
+    <div id="lock-info">Wake Lock: Inactive | Reset: 08:00 AM</div>
 
-    <script>
-        // REPLACE THIS WITH YOUR ACTUAL URL
+<script>
         const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbypiVPLepvEHbpy496Xa904jClmSHk0rLWCO0oHp30TCRIMSag6A5RN_u-GNO4nauO8/exec"; 
-        
         let breadcrumbs = [];
         let activeTag = null;
-        let gpsWatchId = null;
         let isProcessing = false;
-        let shiftActive = false;
-
-        // --- 1. THE AUTO-LOGOUT TIMER ---
+        let shiftActive = true;
+    
+        // --- 1. THE AUTO-LOGOUT HEARTBEAT ---
         setInterval(() => {
-            if (!shiftActive) return;
             const now = new Date();
-            // If it is 8:00 AM or later
-            if (now.getHours() >= 8) {
-                handleAutoLogout();
-            }
-        }, 30000); // Check every 30 seconds
-
-        async function handleAutoLogout() {
-            shiftActive = false;
-            if (gpsWatchId) navigator.geolocation.clearWatch(gpsWatchId);
+            const hrs = now.getHours();
             
+            // If it's 8:00 AM or later and they haven't been logged out yet
+            if (hrs >= 8 && shiftActive) {
+                autoLogout();
+            }
+        }, 30000); // Checks every 30 seconds
+    
+        async function autoLogout() {
+            shiftActive = false;
+            stopGlobalTracking();
+            
+            // Send one final "AUTO-OUT" to the sheet with the full path
             await syncToSheet("SYSTEM", "Auto-Logout (8AM)");
             
-            document.body.className = 'red';
+            document.body.style.backgroundColor = "#c0392b"; // Turn Red
             document.getElementById('status').innerText = "Shift Ended";
             document.getElementById('sub-status').innerText = "8:00 AM Limit Reached";
-        }
-
-        // --- 2. CONTINUOUS GPS WATCH ---
-        function startGlobalTracking() {
-            if ("geolocation" in navigator) {
-                gpsWatchId = navigator.geolocation.watchPosition((pos) => {
-                    const acc = Math.round(pos.coords.accuracy);
-                    document.getElementById('accuracy-info').innerText = `GPS Accuracy: ${acc}m`;
-                    
-                    // Record point if accuracy is decent (under 40m)
-                    if (acc < 40) {
-                        const pt = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`;
-                        if (breadcrumbs[breadcrumbs.length - 1] !== pt) {
-                            breadcrumbs.push(pt);
-                        }
-                    }
-                }, null, { enableHighAccuracy: true, maximumAge: 0 });
+            
+            if ('wakeLock' in navigator) {
+                // Release the screen so battery doesn't die
+                console.log("Releasing WakeLock");
             }
         }
-
+    
+        // --- 2. UPDATED GPS WATCHER ---
+        function startGlobalTracking() {
+            if (!shiftActive) return;
+            
+            gpsWatchId = navigator.geolocation.watchPosition((pos) => {
+                const pt = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`;
+                document.getElementById('accuracy-box').innerText = `GPS Accuracy: ${Math.round(pos.coords.accuracy)}m`;
+                
+                if (pos.coords.accuracy < 35) { 
+                    if (breadcrumbs[breadcrumbs.length - 1] !== pt) breadcrumbs.push(pt);
+                }
+            }, null, { enableHighAccuracy: true, maximumAge: 0 });
+        }
+    
         // --- 3. DATA SYNC ---
         async function syncToSheet(tagText, actionLabel) {
             let mapLink = "N/A";
             if (breadcrumbs.length > 0) {
-                // Generates the path link using all points collected so far
+                // Creates the breadcrumb path link
                 mapLink = "https://www.google.com/maps/dir/" + breadcrumbs.join("/");
             }
-
+    
             const payload = { 
-                name: document.
+                name: document.getElementById('userName').value,
+                tagId: tagText,
+                action: actionLabel, 
+                location: mapLink,
+                timestamp: new Date().toISOString() 
+            };
+    
+            try {
+                await fetch(WEB_APP_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
+            } catch (e) { console.error("Sync Error", e); }
+        }
+    
+        // --- 4. NFC SCANNER (Modified to block scans after 8am) ---
+        async function startNFC() {
+            const ndef = new NDEFReader();
+            await ndef.scan();
+            ndef.onreading = ({ message, serialNumber }) => {
+                if (isProcessing || !shiftActive) return; 
+                isProcessing = true;
+    
+                let chipText = "";
+                const decoder = new TextDecoder();
+                for (const record of message.records) {
+                    if (record.recordType === "text") chipText = decoder.decode(record.data);
+                }
+                const currentId = chipText || serialNumber;
+    
+                if (!activeTag || activeTag !== currentId) {
+                    activeTag = currentId;
+                    document.body.classList.add('amber');
+                    document.getElementById('status').innerText = "Clocked In";
+                    syncToSheet(currentId, "Clock In");
+                } else {
+                    activeTag = null;
+                    document.body.classList.remove('amber');
+                    document.getElementById('status').innerText = "Clocked Out";
+                    syncToSheet(currentId, "Clock Out");
+                }
+    
+                setTimeout(() => { isProcessing = false; }, 3000);
+            };
+        }
+    
+        document.getElementById('startBtn').onclick = async () => {
+            const name = document.getElementById('userName').value;
+            if(!name) return alert("Enter Name");
+            
+            const now = new Date();
+            if (now.getHours() >= 8) return alert("It is past 8:00 AM. Shift cannot be started.");
+    
+            document.getElementById('input-container').style.display = 'none';
+            shiftActive = true;
+            
+            startGlobalTracking();
+            await syncToSheet("LOGIN", "Shift Start");
+            
+            try { 
+                await startNFC(); 
+                if ('wakeLock' in navigator) await navigator.wakeLock.request('screen');
+            } catch (e) { alert("Check NFC/HTTPS settings"); }
+        };
+        </script>
+</body>
+</html>
