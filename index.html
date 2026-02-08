@@ -28,7 +28,7 @@
     <div id="lock-info">Wake Lock: Inactive | Auto-Reset: 08:00 AM</div>
 
     <script>
-        const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwtbxLIjY47cuP3jWI5DfYVv0WYxiuLIaT2uldqAgtUsKPRNHarN0NU20UzXVxkzGuy/exec"; 
+        const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyWPP1rnk_YwiwGYVM4cYdKRr9W_4NobBdr_AoQvCzIPHmWySzLw7BHxPd8KigJFLJB/exec"; 
         
         let activeTag = null; 
         let breadcrumbs = [];
@@ -88,23 +88,26 @@
                     document.getElementById('status').innerText = "Location Cleared";
                     document.getElementById('sub-status').innerText = "Ready for next scan";
                 } else {
-                    // WRONG TAG (FIXED)
-                    const oldStatus = document.getElementById('status').innerText;
-                    const oldSub = document.getElementById('sub-status').innerText;
-                    
-                    document.body.className = 'red';
-                    document.getElementById('status').innerText = "Wrong Tag!";
-                    document.getElementById('sub-status').innerText = "Must scan: " + activeTag;
-                    
-                    setTimeout(() => {
+                    } else {
+    // THE "WRONG TAG" LOGIC
+                const correctTag = activeTag; // Store the one they SHOULD have scanned
+                
+                document.body.className = 'red';
+                document.getElementById('status').innerText = "WRONG TAG!";
+                document.getElementById('sub-status').innerText = "Must scan: " + correctTag;
+                
+                // Play a short vibration if supported
+                if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+            
+                // Revert back to Amber after 4 seconds
+                setTimeout(() => {
+                    if (activeTag === correctTag) { // Only revert if they haven't fixed it yet
                         document.body.className = 'amber';
-                        document.getElementById('status').innerText = oldStatus;
-                        document.getElementById('sub-status').innerText = oldSub;
-                    }, 4000);
-                }
-            };
-        }
-
+                        document.getElementById('status').innerText = "Location Active";
+                        document.getElementById('sub-status').innerText = "In: " + correctTag;
+                    }
+                }, 4000);
+            }
         // --- 4. SYNC ---
         async function syncToSheet(tagText, action) {
             let mapLink = "N/A";
