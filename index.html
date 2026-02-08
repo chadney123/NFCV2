@@ -5,14 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Shift Tracker Pro</title>
     <style>
+        /* UI & Animations */
         body { transition: background-color 0.4s; background-color: #2ecc71; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; color: white; text-align: center; overflow: hidden; }
         .amber { background-color: #f39c12 !important; }
         .red { background-color: #e74c3c !important; }
-        #status { font-size: 2.2rem; font-weight: bold; margin-bottom: 10px; }
-        #sub-status { font-size: 1.2rem; opacity: 0.9; margin-bottom: 30px; height: 1.2em; }
-        input { padding: 18px; font-size: 1.4rem; border-radius: 12px; border: none; margin-bottom: 20px; width: 80%; text-align: center; }
-        button { padding: 20px 50px; font-size: 1.3rem; border-radius: 50px; border: none; background: white; color: #2ecc71; font-weight: bold; cursor: pointer; }
-        #lock-info { position: fixed; bottom: 15px; font-size: 0.75rem; opacity: 0.6; }
+        
+        #status { font-size: 2.2rem; font-weight: bold; margin-bottom: 10px; padding: 0 15px; }
+        #sub-status { font-size: 1.2rem; opacity: 0.9; margin-bottom: 30px; min-height: 1.2em; padding: 0 20px; }
+        
+        #input-container { display: flex; flex-direction: column; align-items: center; width: 100%; }
+        input { padding: 18px; font-size: 1.4rem; border-radius: 12px; border: none; margin-bottom: 20px; width: 80%; max-width: 300px; text-align: center; color: #333; }
+        button { padding: 20px 50px; font-size: 1.3rem; border-radius: 50px; border: none; background: white; color: #2ecc71; font-weight: bold; cursor: pointer; box-shadow: 0 4px 15px rgba(0,0,0,0.2); transition: transform 0.1s; }
+        button:active { transform: scale(0.95); }
+        
+        #lock-info { position: fixed; bottom: 15px; font-size: 0.75rem; opacity: 0.6; width: 100%; }
     </style>
 </head>
 <body>
@@ -21,97 +27,120 @@
     <div id="sub-status">Enter name to begin</div>
 
     <div id="input-container">
-        <input type="text" id="userName" placeholder="Staff Name">
+        <input type="text" id="userName" placeholder="Staff Name" autocomplete="off">
         <button id="startBtn">Begin Shift</button>
     </div>
 
     <div id="lock-info">Wake Lock: Inactive | Auto-Reset: 08:00 AM</div>
 
     <script>
-        const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyWPP1rnk_YwiwGYVM4cYdKRr9W_4NobBdr_AoQvCzIPHmWySzLw7BHxPd8KigJFLJB/exec"; 
+        // --- 1. CONFIGURATION ---
+        const WEB_APP_URL = "Yhttps://script.google.com/macros/s/AKfycbymRfPk5R9CB0picme1ns3cu8un5ZCHD-Twh1BtEuouYxxeHEC_zy7ZSlJD64hqtlds/exec"; 
         
+        // --- 2. GLOBAL STATE ---
         let activeTag = null; 
         let breadcrumbs = [];
         let wakeLock = null;
         let gpsWatchId = null;
+        let isProcessing = false;
 
-        // --- 1. WAKE LOCK (FIXED) ---
+        // --- 3. WAKE LOCK (Keep Screen On) ---
         async function requestLock() {
             if ('wakeLock' in navigator) {
                 try {
                     wakeLock = await navigator.wakeLock.request('screen');
                     document.getElementById('lock-info').innerText = "Wake Lock: ACTIVE";
-                    wakeLock.addEventListener('release', () => {
-                        document.getElementById('lock-info').innerText = "Wake Lock: Released";
-                    });
                 } catch (err) {
-                    document.getElementById('lock-info').innerText = "Wake Lock: Failed";
+                    document.getElementById('lock-info').innerText = "Wake Lock: Permission Denied";
                 }
             }
         }
 
-        // --- 2. GPS TRACKING ---
+        // --- 4. GPS MOVEMENT TRACKING ---
         function startTracking() {
-            gpsWatchId = navigator.geolocation.watchPosition((pos) => {
-                if (pos.coords.accuracy < 45) {
-                    const pt = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`;
-                    if (breadcrumbs[breadcrumbs.length - 1] !== pt) breadcrumbs.push(pt);
-                }
-            }, null, { enableHighAccuracy: true });
+            if ("geolocation" in navigator) {
+                gpsWatchId = navigator.geolocation.watchPosition((pos) => {
+                    // Accuracy filter: Ignore points worse than 45m
+                    if (pos.coords.accuracy < 45) {
+                        const pt = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`;
+                        if (breadcrumbs[breadcrumbs.length - 1] !== pt) {
+                            breadcrumbs.push(pt);
+                            localStorage.setItem('breadcrumbs', JSON.stringify(breadcrumbs));
+                        }
+                    }
+                }, null, { enableHighAccuracy: true });
+            }
         }
 
-        // --- 3. NFC & SCAN LOGIC (FIXED) ---
+        // --- 5. NFC SCAN LOGIC ---
         async function startNFC() {
-            const ndef = new NDEFReader();
-            await ndef.scan();
-            ndef.onreading = ({ message, serialNumber }) => {
-                let text = "";
-                const decoder = new TextDecoder();
-                for (const record of message.records) {
-                    if (record.recordType === "text") text = decoder.decode(record.data);
-                }
-                const tagValue = text || serialNumber;
+            if ("NDEFReader" in window) {
+                try {
+                    const ndef = new NDEFReader();
+                    await ndef.scan();
+                    ndef.onreading = ({ message, serialNumber }) => {
+                        if (isProcessing) return; // Prevent double scans
+                        isProcessing = true;
 
-                if (!activeTag) {
-                    // CLOCK IN
-                    activeTag = tagValue;
-                    document.body.className = 'amber';
-                    document.getElementById('status').innerText = "Location Active";
-                    document.getElementById('sub-status').innerText = "In: " + tagValue;
-                    syncToSheet(tagValue, "IN");
-                } else if (tagValue === activeTag) {
-                    // CLOCK OUT
-                    syncToSheet(tagValue, "OUT");
-                    activeTag = null;
-                    breadcrumbs = [];
-                    document.body.className = '';
-                    document.getElementById('status').innerText = "Location Cleared";
-                    document.getElementById('sub-status').innerText = "Ready for next scan";
-                } else {
-                    } else {
-    // THE "WRONG TAG" LOGIC
-                const correctTag = activeTag; // Store the one they SHOULD have scanned
-                
+                        let text = "";
+                        const decoder = new TextDecoder();
+                        for (const record of message.records) {
+                            if (record.recordType === "text") text = decoder.decode(record.data);
+                        }
+                        const scannedValue = text || serialNumber;
+                        handleTagLogic(scannedValue);
+                        
+                        setTimeout(() => { isProcessing = false; }, 3000);
+                    };
+                } catch (e) {
+                    alert("NFC Error: Ensure HTTPS is used.");
+                }
+            }
+        }
+
+        function handleTagLogic(tagValue) {
+            if (!activeTag) {
+                // CLOCK IN
+                activeTag = tagValue;
+                localStorage.setItem('activeTag', activeTag);
+                document.body.className = 'amber';
+                document.getElementById('status').innerText = "Location Active";
+                document.getElementById('sub-status').innerText = "Logged at: " + tagValue;
+                syncToSheet(tagValue, "IN");
+            } else if (tagValue === activeTag) {
+                // CLOCK OUT
+                syncToSheet(tagValue, "OUT");
+                activeTag = null;
+                localStorage.removeItem('activeTag');
+                localStorage.removeItem('breadcrumbs');
+                breadcrumbs = [];
+                document.body.className = '';
+                document.getElementById('status').innerText = "Location Cleared";
+                document.getElementById('sub-status').innerText = "Ready for next scan";
+            } else {
+                // WRONG TAG ERROR
+                const correctLocation = activeTag;
                 document.body.className = 'red';
                 document.getElementById('status').innerText = "WRONG TAG!";
-                document.getElementById('sub-status').innerText = "Must scan: " + correctTag;
+                document.getElementById('sub-status').innerText = "Must scan: " + correctLocation;
                 
-                // Play a short vibration if supported
-                if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
-            
-                // Revert back to Amber after 4 seconds
+                if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
+
                 setTimeout(() => {
-                    if (activeTag === correctTag) { // Only revert if they haven't fixed it yet
+                    if (activeTag === correctLocation) {
                         document.body.className = 'amber';
                         document.getElementById('status').innerText = "Location Active";
-                        document.getElementById('sub-status').innerText = "In: " + correctTag;
+                        document.getElementById('sub-status').innerText = "Logged at: " + correctLocation;
                     }
-                }, 4000);
+                }, 5000);
             }
-        // --- 4. SYNC ---
+        }
+
+        // --- 6. DATA SYNC ---
         async function syncToSheet(tagText, action) {
             let mapLink = "N/A";
-            if (action === "OUT" && breadcrumbs.length > 0) {
+            // Generate breadcrumb route link on exit
+            if ((action === "OUT" || action.includes("AUTO")) && breadcrumbs.length > 0) {
                 mapLink = "https://www.google.com/maps/dir/" + breadcrumbs.join("/");
             }
             
@@ -119,7 +148,7 @@
 
             const payload = { 
                 tagText: tagText, 
-                name: document.getElementById('userName').value, 
+                name: localStorage.getItem('userName'), 
                 shiftStarted: startStr,
                 action: action, 
                 location: mapLink
@@ -128,13 +157,26 @@
             fetch(WEB_APP_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
         }
 
-        // --- 5. START BUTTON ---
-        document.getElementById('startBtn').onclick = async () => {
-            const name = document.getElementById('userName').value;
-            if(!name) return alert("Enter Name");
+        // --- 7. AUTO-RESET (8:00 AM) ---
+        setInterval(() => {
+            const shiftStarted = localStorage.getItem('shiftStartedTime');
+            if (shiftStarted) {
+                const now = new Date();
+                if (now.getHours() === 8 && now.getMinutes() === 0) {
+                    if (activeTag) syncToSheet(activeTag, "AUTO-OUT");
+                    localStorage.clear();
+                    location.reload();
+                }
+            }
+        }, 30000);
 
-            const now = new Date();
-            const timeStr = now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+        // --- 8. LOGIN ACTION ---
+        document.getElementById('startBtn').onclick = async () => {
+            const name = document.getElementById('userName').value.trim();
+            if(!name) return alert("Please enter your name.");
+
+            localStorage.setItem('userName', name);
+            const timeStr = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
             localStorage.setItem('shiftStartedTime', timeStr);
 
             document.getElementById('input-container').style.display = 'none';
@@ -145,6 +187,29 @@
             startTracking();
             await startNFC();
             syncToSheet("START", "SHIFT START");
+        };
+
+        // --- 9. REHYDRATE (Page Refresh) ---
+        window.onload = () => {
+            const savedName = localStorage.getItem('userName');
+            if (savedName) {
+                document.getElementById('input-container').style.display = 'none';
+                activeTag = localStorage.getItem('activeTag');
+                breadcrumbs = JSON.parse(localStorage.getItem('breadcrumbs')) || [];
+                
+                if (activeTag) {
+                    document.body.className = 'amber';
+                    document.getElementById('status').innerText = "Location Active";
+                    document.getElementById('sub-status').innerText = "Logged at: " + activeTag;
+                } else {
+                    document.getElementById('status').innerText = "Shift Active";
+                    document.getElementById('sub-status').innerText = "Scan NFC to log movement";
+                }
+
+                requestLock();
+                startTracking();
+                startNFC();
+            }
         };
     </script>
 </body>
