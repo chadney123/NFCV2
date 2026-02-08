@@ -5,15 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Shift Tracker Pro</title>
     <style>
-        body { transition: background-color 0.6s ease; background-color: #2ecc71; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; color: white; text-align: center; overflow: hidden; }
+        body { transition: background-color 0.4s; background-color: #2ecc71; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; color: white; text-align: center; overflow: hidden; }
         .amber { background-color: #f39c12 !important; }
         .red { background-color: #e74c3c !important; }
-        #status { font-size: 2.2rem; font-weight: bold; margin-bottom: 10px; padding: 0 20px; }
-        #sub-status { font-size: 1.1rem; opacity: 0.9; margin-bottom: 30px; height: 1.2em; }
-        #input-container { width: 100%; display: flex; flex-direction: column; align-items: center; }
-        input { padding: 18px; font-size: 1.4rem; border-radius: 12px; border: none; margin-bottom: 20px; width: 85%; max-width: 350px; text-align: center; color: #333; }
-        button { padding: 20px 50px; font-size: 1.3rem; cursor: pointer; border: none; border-radius: 50px; background: white; color: #2ecc71; font-weight: bold; }
-        #lock-info { position: fixed; bottom: 15px; font-size: 0.75rem; opacity: 0.5; }
+        #status { font-size: 2.2rem; font-weight: bold; margin-bottom: 10px; }
+        #sub-status { font-size: 1.2rem; opacity: 0.9; margin-bottom: 30px; height: 1.2em; }
+        input { padding: 18px; font-size: 1.4rem; border-radius: 12px; border: none; margin-bottom: 20px; width: 80%; text-align: center; }
+        button { padding: 20px 50px; font-size: 1.3rem; border-radius: 50px; border: none; background: white; color: #2ecc71; font-weight: bold; cursor: pointer; }
+        #lock-info { position: fixed; bottom: 15px; font-size: 0.75rem; opacity: 0.6; }
     </style>
 </head>
 <body>
@@ -22,136 +21,128 @@
     <div id="sub-status">Enter name to begin</div>
 
     <div id="input-container">
-        <input type="text" id="userName" placeholder="Type Name Here..." autocomplete="off">
+        <input type="text" id="userName" placeholder="Staff Name">
         <button id="startBtn">Begin Shift</button>
     </div>
 
     <div id="lock-info">Wake Lock: Inactive | Auto-Reset: 08:00 AM</div>
 
     <script>
-        const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwstcvIArs40YZzSQUFr3SP1yRJhdyFtOSFGucJu7pe33LAmd7iioHyoRgWLnJPvy4X/exec"; 
-        
-        const body = document.body;
-        const statusDisplay = document.getElementById('status');
-        const subStatus = document.getElementById('sub-status');
-        const nameInput = document.getElementById('userName');
-        const inputContainer = document.getElementById('input-container');
+        const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwtbxLIjY47cuP3jWI5DfYVv0WYxiuLIaT2uldqAgtUsKPRNHarN0NU20UzXVxkzGuy/exec"; 
         
         let activeTag = null; 
         let breadcrumbs = [];
-        let isProcessing = false;
+        let wakeLock = null;
         let gpsWatchId = null;
 
-        // --- 8AM AUTO RESET ---
-        setInterval(() => {
-            const shiftStartedStr = localStorage.getItem('shiftStarted');
-            if (shiftStartedStr) {
-                const now = new Date();
-                const shiftStart = new Date(shiftStartedStr);
-                if (shiftStart.getHours() < 8 && now.getHours() >= 8) {
-                    handleAutoReset();
+        // --- 1. WAKE LOCK (FIXED) ---
+        async function requestLock() {
+            if ('wakeLock' in navigator) {
+                try {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    document.getElementById('lock-info').innerText = "Wake Lock: ACTIVE";
+                    wakeLock.addEventListener('release', () => {
+                        document.getElementById('lock-info').innerText = "Wake Lock: Released";
+                    });
+                } catch (err) {
+                    document.getElementById('lock-info').innerText = "Wake Lock: Failed";
                 }
             }
-        }, 30000);
-
-        async function handleAutoReset() {
-            if (activeTag) await syncToSheet(activeTag, "AUTO-OUT");
-            if (gpsWatchId) navigator.geolocation.clearWatch(gpsWatchId);
-            localStorage.clear();
-            location.reload();
         }
 
-        function startGlobalTracking() {
-            if ("geolocation" in navigator) {
-                gpsWatchId = navigator.geolocation.watchPosition((pos) => {
-                    if (pos.coords.accuracy < 40) {
-                        const pt = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`;
-                        if (breadcrumbs[breadcrumbs.length - 1] !== pt) {
-                            breadcrumbs.push(pt);
-                            localStorage.setItem('breadcrumbs', JSON.stringify(breadcrumbs));
-                        }
-                    }
-                }, null, { enableHighAccuracy: true, maximumAge: 0 });
-            }
+        // --- 2. GPS TRACKING ---
+        function startTracking() {
+            gpsWatchId = navigator.geolocation.watchPosition((pos) => {
+                if (pos.coords.accuracy < 45) {
+                    const pt = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`;
+                    if (breadcrumbs[breadcrumbs.length - 1] !== pt) breadcrumbs.push(pt);
+                }
+            }, null, { enableHighAccuracy: true });
         }
 
+        // --- 3. NFC & SCAN LOGIC (FIXED) ---
         async function startNFC() {
-            if ("NDEFReader" in window) {
-                const ndef = new NDEFReader();
-                await ndef.scan();
-                ndef.onreading = ({ message, serialNumber }) => {
-                    if (isProcessing) return;
-                    let extractedText = "";
-                    const decoder = new TextDecoder();
-                    for (const record of message.records) {
-                        if (record.recordType === "text") extractedText = decoder.decode(record.data);
-                    }
-                    handleScan(extractedText || serialNumber);
-                    isProcessing = true;
-                    setTimeout(() => isProcessing = false, 3000);
-                };
-            }
+            const ndef = new NDEFReader();
+            await ndef.scan();
+            ndef.onreading = ({ message, serialNumber }) => {
+                let text = "";
+                const decoder = new TextDecoder();
+                for (const record of message.records) {
+                    if (record.recordType === "text") text = decoder.decode(record.data);
+                }
+                const tagValue = text || serialNumber;
+
+                if (!activeTag) {
+                    // CLOCK IN
+                    activeTag = tagValue;
+                    document.body.className = 'amber';
+                    document.getElementById('status').innerText = "Location Active";
+                    document.getElementById('sub-status').innerText = "In: " + tagValue;
+                    syncToSheet(tagValue, "IN");
+                } else if (tagValue === activeTag) {
+                    // CLOCK OUT
+                    syncToSheet(tagValue, "OUT");
+                    activeTag = null;
+                    breadcrumbs = [];
+                    document.body.className = '';
+                    document.getElementById('status').innerText = "Location Cleared";
+                    document.getElementById('sub-status').innerText = "Ready for next scan";
+                } else {
+                    // WRONG TAG (FIXED)
+                    const oldStatus = document.getElementById('status').innerText;
+                    const oldSub = document.getElementById('sub-status').innerText;
+                    
+                    document.body.className = 'red';
+                    document.getElementById('status').innerText = "Wrong Tag!";
+                    document.getElementById('sub-status').innerText = "Must scan: " + activeTag;
+                    
+                    setTimeout(() => {
+                        document.body.className = 'amber';
+                        document.getElementById('status').innerText = oldStatus;
+                        document.getElementById('sub-status').innerText = oldSub;
+                    }, 4000);
+                }
+            };
         }
 
-        function handleScan(tagValue) {
-            if (!activeTag) {
-                activeTag = tagValue;
-                localStorage.setItem('activeTag', activeTag);
-                updateUI("Location Active", "In: " + tagValue, 'amber');
-                syncToSheet(tagValue, "IN");
-            } else if (activeTag === tagValue) {
-                syncToSheet(tagValue, "OUT");
-                activeTag = null;
-                breadcrumbs = [];
-                localStorage.removeItem('activeTag');
-                localStorage.removeItem('breadcrumbs');
-                updateUI("Location Cleared", "Ready for next scan", '');
-            }
-        }
-
-                async function syncToSheet(tagText, action) {
+        // --- 4. SYNC ---
+        async function syncToSheet(tagText, action) {
             let mapLink = "N/A";
-            if ((action === "OUT" || action.includes("AUTO")) && breadcrumbs.length > 0) {
+            if (action === "OUT" && breadcrumbs.length > 0) {
                 mapLink = "https://www.google.com/maps/dir/" + breadcrumbs.join("/");
             }
             
-            const startRaw = localStorage.getItem('shiftStarted');
-            const startFormatted = startRaw ? new Date(startRaw).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'}) : "N/A";
-        
+            const startStr = localStorage.getItem('shiftStartedTime') || "N/A";
+
             const payload = { 
-                tagText: tagText, // <--- Ensure this is not blank
-                name: localStorage.getItem('userName'), 
-                shiftStarted: startFormatted,
+                tagText: tagText, 
+                name: document.getElementById('userName').value, 
+                shiftStarted: startStr,
                 action: action, 
                 location: mapLink
             };
-        
-            fetch(WEB_APP_URL, { 
-                method: 'POST', 
-                mode: 'no-cors', 
-                body: JSON.stringify(payload) 
-            });
+
+            fetch(WEB_APP_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
         }
 
-        function updateUI(status, sub, bgColorClass) {
-            statusDisplay.innerText = status;
-            subStatus.innerText = sub;
-            body.className = bgColorClass;
-        }
+        // --- 5. START BUTTON ---
+        document.getElementById('startBtn').onclick = async () => {
+            const name = document.getElementById('userName').value;
+            if(!name) return alert("Enter Name");
 
-        document.getElementById('startBtn').onclick = () => {
-            const name = nameInput.value.trim();
-            if (!name) return alert("Enter name");
-            localStorage.setItem('userName', name);
-            localStorage.setItem('shiftStarted', new Date().toISOString());
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+            localStorage.setItem('shiftStartedTime', timeStr);
+
+            document.getElementById('input-container').style.display = 'none';
+            document.getElementById('status').innerText = "Shift Active";
+            document.getElementById('sub-status').innerText = "Scan NFC to log movement";
+
+            await requestLock();
+            startTracking();
+            await startNFC();
             syncToSheet("START", "SHIFT START");
-            inputContainer.style.display = 'none';
-            updateUI("Shift Active", "Scan NFC to log", '');
-            startGlobalTracking();
-            startNFC();
         };
-
-        window.onload = () => { if(localStorage.getItem('userName')) { inputContainer.style.display='none'; startGlobalTracking(); startNFC(); updateUI("Shift Active", "Scan NFC to log", ''); } };
     </script>
 </body>
 </html>
