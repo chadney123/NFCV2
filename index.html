@@ -31,7 +31,7 @@
         <button id="startBtn">Begin Shift</button>
     </div>
 
-    <div id="lock-info">Wake Lock: Inactive | Auto-Reset: 08:00 AM</div>
+    <div id="lock-info">Wake Lock: Inactive | Auto-Reset: 08:00 AM | App Ver:V2.1</div>
 
     <script>
         // --- 1. CONFIGURATION ---
@@ -122,7 +122,7 @@
                 const correctLocation = activeTag;
                 document.body.className = 'red';
                 document.getElementById('status').innerText = "WRONG TAG!";
-                document.getElementById('sub-status').innerText = "Must scan: " + correctLocation;
+                document.getElementById('sub-status').innerText = "Logged Location: " + correctLocation;
                 
                 if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
 
