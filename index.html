@@ -4,8 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Shift Tracker Pro</title>
-    <link rel="manifest" href="manifest.json">
-    <meta name="theme-color" content="#2ecc71">
     <style>
         body { transition: background-color 0.6s ease; background-color: #2ecc71; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; color: white; text-align: center; overflow: hidden; }
         .amber { background-color: #f39c12 !important; }
@@ -14,7 +12,7 @@
         #sub-status { font-size: 1.1rem; opacity: 0.9; margin-bottom: 30px; height: 1.2em; }
         #input-container { width: 100%; display: flex; flex-direction: column; align-items: center; }
         input { padding: 18px; font-size: 1.4rem; border-radius: 12px; border: none; margin-bottom: 20px; width: 85%; max-width: 350px; text-align: center; color: #333; }
-        button { padding: 20px 50px; font-size: 1.3rem; cursor: pointer; border: none; border-radius: 50px; background: white; color: #2ecc71; font-weight: bold; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+        button { padding: 20px 50px; font-size: 1.3rem; cursor: pointer; border: none; border-radius: 50px; background: white; color: #2ecc71; font-weight: bold; }
         #lock-info { position: fixed; bottom: 15px; font-size: 0.75rem; opacity: 0.5; }
     </style>
 </head>
@@ -31,43 +29,25 @@
     <div id="lock-info">Wake Lock: Inactive | Auto-Reset: 08:00 AM</div>
 
     <script>
-        const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbypiVPLepvEHbpy496Xa904jClmSHk0rLWCO0oHp30TCRIMSag6A5RN_u-GNO4nauO8/exec"; 
+        const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbxWi-bLWuSNukHRR8EVzh-o3TrltXT0nxb7B8eJ3OalKs0k72Q39VnbFg2y0SX_Pn9n/exec"; 
         
         const body = document.body;
         const statusDisplay = document.getElementById('status');
         const subStatus = document.getElementById('sub-status');
         const nameInput = document.getElementById('userName');
         const inputContainer = document.getElementById('input-container');
-        const lockInfo = document.getElementById('lock-info');
         
         let activeTag = null; 
         let breadcrumbs = [];
         let isProcessing = false;
-        let wakeLock = null;
         let gpsWatchId = null;
 
-        if ('serviceWorker' in navigator) { 
-            navigator.serviceWorker.register('sw.js').catch(err => console.log(err)); 
-        }
-
-        // --- BACK BUTTON TRAP ---
-        function disableBackButton() {
-            window.history.pushState(null, null, window.location.href);
-            window.onpopstate = function() {
-                window.history.pushState(null, null, window.location.href);
-            };
-        }
-        disableBackButton();
-
-        // --- 8AM AUTO RESET LOGIC ---
-        // This only fires if they started BEFORE 8am and are still active AT 8am
+        // --- 8AM AUTO RESET ---
         setInterval(() => {
-            const now = new Date();
             const shiftStartedStr = localStorage.getItem('shiftStarted');
-            
             if (shiftStartedStr) {
+                const now = new Date();
                 const shiftStart = new Date(shiftStartedStr);
-                // If they started before 8am today, and it is now 8am or later
                 if (shiftStart.getHours() < 8 && now.getHours() >= 8) {
                     handleAutoReset();
                 }
@@ -75,28 +55,10 @@
         }, 30000);
 
         async function handleAutoReset() {
-            const finalTag = activeTag || "NONE";
-            await syncToSheet(finalTag, "AUTO-RESET (8AM)");
-            
+            if (activeTag) await syncToSheet(activeTag, "AUTO-OUT");
             if (gpsWatchId) navigator.geolocation.clearWatch(gpsWatchId);
-            
             localStorage.clear();
-            activeTag = null;
-            breadcrumbs = [];
-            
-            updateUI("Welcome", "Shift Reset complete. Please log in.", '');
-            inputContainer.style.display = 'flex';
-            nameInput.value = "";
-        }
-
-        // --- HARDWARE ---
-        async function requestWakeLock() {
-            if ('wakeLock' in navigator) {
-                try {
-                    wakeLock = await navigator.wakeLock.request('screen');
-                    lockInfo.innerText = "Wake Lock: ACTIVE";
-                } catch (err) { lockInfo.innerText = "Wake Lock: Inactive"; }
-            }
+            location.reload();
         }
 
         function startGlobalTracking() {
@@ -109,28 +71,25 @@
                             localStorage.setItem('breadcrumbs', JSON.stringify(breadcrumbs));
                         }
                     }
-                }, null, { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 });
+                }, null, { enableHighAccuracy: true, maximumAge: 0 });
             }
         }
 
         async function startNFC() {
             if ("NDEFReader" in window) {
-                try {
-                    const ndef = new NDEFReader();
-                    await ndef.scan();
-                    ndef.onreading = ({ message, serialNumber }) => {
-                        if (isProcessing) return;
-                        let extractedText = "";
-                        const decoder = new TextDecoder();
-                        for (const record of message.records) {
-                            if (record.recordType === "text") extractedText = decoder.decode(record.data);
-                        }
-                        const tagValue = extractedText || serialNumber;
-                        handleScan(tagValue);
-                        isProcessing = true;
-                        setTimeout(() => isProcessing = false, 3000);
-                    };
-                } catch (e) { console.warn("NFC Read Error", e); }
+                const ndef = new NDEFReader();
+                await ndef.scan();
+                ndef.onreading = ({ message, serialNumber }) => {
+                    if (isProcessing) return;
+                    let extractedText = "";
+                    const decoder = new TextDecoder();
+                    for (const record of message.records) {
+                        if (record.recordType === "text") extractedText = decoder.decode(record.data);
+                    }
+                    handleScan(extractedText || serialNumber);
+                    isProcessing = true;
+                    setTimeout(() => isProcessing = false, 3000);
+                };
             }
         }
 
@@ -138,7 +97,7 @@
             if (!activeTag) {
                 activeTag = tagValue;
                 localStorage.setItem('activeTag', activeTag);
-                updateUI("Location Active", "Logged at: " + tagValue, 'amber');
+                updateUI("Location Active", "In: " + tagValue, 'amber');
                 syncToSheet(tagValue, "IN");
             } else if (activeTag === tagValue) {
                 syncToSheet(tagValue, "OUT");
@@ -146,13 +105,7 @@
                 breadcrumbs = [];
                 localStorage.removeItem('activeTag');
                 localStorage.removeItem('breadcrumbs');
-                updateUI("Location Cleared", "Ready for next Location", '');
-                setTimeout(() => { if(!activeTag && localStorage.getItem('userName')) updateUI("Shift Active", "Scan NFC to log", ''); }, 2500);
-            } else {
-                updateUI("Wrong Tag!", "Scan " + activeTag + " to exit", 'red');
-                setTimeout(() => { 
-                    if(activeTag) updateUI("Location Active", "Logged at: " + activeTag, 'amber');
-                }, 3000);
+                updateUI("Location Cleared", "Ready for next scan", '');
             }
         }
 
@@ -161,12 +114,17 @@
             if ((action === "OUT" || action.includes("AUTO")) && breadcrumbs.length > 0) {
                 mapLink = "https://www.google.com/maps/dir/" + breadcrumbs.join("/");
             }
+            
+            // Format Shift Start for the Sheet
+            const startRaw = localStorage.getItem('shiftStarted');
+            const startFormatted = startRaw ? new Date(startRaw).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'}) : "N/A";
+
             const payload = { 
                 tagText, 
                 name: localStorage.getItem('userName'), 
+                shiftStarted: startFormatted,
                 action, 
-                location: mapLink, 
-                timestamp: new Date().toISOString() 
+                location: mapLink
             };
             fetch(WEB_APP_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
         }
@@ -177,37 +135,19 @@
             body.className = bgColorClass;
         }
 
-        function rehydrate() {
-            const savedName = localStorage.getItem('userName');
-            if (!savedName) return;
-
-            activeTag = localStorage.getItem('activeTag');
-            breadcrumbs = JSON.parse(localStorage.getItem('breadcrumbs')) || [];
-
-            inputContainer.style.display = 'none';
-            if (activeTag) {
-                updateUI("Location Active", "Logged: " + activeTag, 'amber');
-            } else {
-                updateUI("Shift Active: " + savedName, "Scan NFC to log", '');
-            }
-            startGlobalTracking();
-            startNFC();
-            requestWakeLock();
-        }
-
         document.getElementById('startBtn').onclick = () => {
             const name = nameInput.value.trim();
             if (!name) return alert("Enter name");
-
             localStorage.setItem('userName', name);
             localStorage.setItem('shiftStarted', new Date().toISOString());
-            
-            syncToSheet("LOGIN", "SHIFT START");
-            rehydrate();
+            syncToSheet("START", "SHIFT START");
+            inputContainer.style.display = 'none';
+            updateUI("Shift Active", "Scan NFC to log", '');
+            startGlobalTracking();
+            startNFC();
         };
 
-        window.onload = rehydrate;
-        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') rehydrate(); });
+        window.onload = () => { if(localStorage.getItem('userName')) { inputContainer.style.display='none'; startGlobalTracking(); startNFC(); updateUI("Shift Active", "Scan NFC to log", ''); } };
     </script>
 </body>
 </html>
