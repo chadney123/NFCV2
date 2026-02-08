@@ -28,127 +28,186 @@
         <button id="startBtn">Begin Shift</button>
     </div>
 
-    <div id="lock-info">Wake Lock: Inactive | Reset: 08:00 AM</div>
+    <div id="lock-info">Wake Lock: Inactive | Auto-Reset: 08:00 AM</div>
 
-<script>
+    <script>
         const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbypiVPLepvEHbpy496Xa904jClmSHk0rLWCO0oHp30TCRIMSag6A5RN_u-GNO4nauO8/exec"; 
+        
+        const body = document.body;
+        const statusDisplay = document.getElementById('status');
+        const subStatus = document.getElementById('sub-status');
+        const nameInput = document.getElementById('userName');
+        const inputContainer = document.getElementById('input-container');
+        const lockInfo = document.getElementById('lock-info');
+        
+        let activeTag = null; 
         let breadcrumbs = [];
-        let activeTag = null;
         let isProcessing = false;
-        let shiftActive = true;
-    
-        // --- 1. THE AUTO-LOGOUT HEARTBEAT ---
+        let wakeLock = null;
+        let gpsWatchId = null;
+
+        if ('serviceWorker' in navigator) { 
+            navigator.serviceWorker.register('sw.js').catch(err => console.log(err)); 
+        }
+
+        // --- BACK BUTTON TRAP ---
+        function disableBackButton() {
+            window.history.pushState(null, null, window.location.href);
+            window.onpopstate = function() {
+                window.history.pushState(null, null, window.location.href);
+            };
+        }
+        disableBackButton();
+
+        // --- 8AM AUTO RESET LOGIC ---
+        // This only fires if they started BEFORE 8am and are still active AT 8am
         setInterval(() => {
             const now = new Date();
-            const hrs = now.getHours();
+            const shiftStartedStr = localStorage.getItem('shiftStarted');
             
-            // If it's 8:00 AM or later and they haven't been logged out yet
-            if (hrs >= 8 && shiftActive) {
-                autoLogout();
-            }
-        }, 30000); // Checks every 30 seconds
-    
-        async function autoLogout() {
-            shiftActive = false;
-            stopGlobalTracking();
-            
-            // Send one final "AUTO-OUT" to the sheet with the full path
-            await syncToSheet("SYSTEM", "Auto-Logout (8AM)");
-            
-            document.body.style.backgroundColor = "#c0392b"; // Turn Red
-            document.getElementById('status').innerText = "Shift Ended";
-            document.getElementById('sub-status').innerText = "8:00 AM Limit Reached";
-            
-            if ('wakeLock' in navigator) {
-                // Release the screen so battery doesn't die
-                console.log("Releasing WakeLock");
-            }
-        }
-    
-        // --- 2. UPDATED GPS WATCHER ---
-        function startGlobalTracking() {
-            if (!shiftActive) return;
-            
-            gpsWatchId = navigator.geolocation.watchPosition((pos) => {
-                const pt = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`;
-                document.getElementById('accuracy-box').innerText = `GPS Accuracy: ${Math.round(pos.coords.accuracy)}m`;
-                
-                if (pos.coords.accuracy < 35) { 
-                    if (breadcrumbs[breadcrumbs.length - 1] !== pt) breadcrumbs.push(pt);
+            if (shiftStartedStr) {
+                const shiftStart = new Date(shiftStartedStr);
+                // If they started before 8am today, and it is now 8am or later
+                if (shiftStart.getHours() < 8 && now.getHours() >= 8) {
+                    handleAutoReset();
                 }
-            }, null, { enableHighAccuracy: true, maximumAge: 0 });
+            }
+        }, 30000);
+
+        async function handleAutoReset() {
+            const finalTag = activeTag || "NONE";
+            await syncToSheet(finalTag, "AUTO-RESET (8AM)");
+            
+            if (gpsWatchId) navigator.geolocation.clearWatch(gpsWatchId);
+            
+            localStorage.clear();
+            activeTag = null;
+            breadcrumbs = [];
+            
+            updateUI("Welcome", "Shift Reset complete. Please log in.", '');
+            inputContainer.style.display = 'flex';
+            nameInput.value = "";
         }
-    
-        // --- 3. DATA SYNC ---
-        async function syncToSheet(tagText, actionLabel) {
+
+        // --- HARDWARE ---
+        async function requestWakeLock() {
+            if ('wakeLock' in navigator) {
+                try {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    lockInfo.innerText = "Wake Lock: ACTIVE";
+                } catch (err) { lockInfo.innerText = "Wake Lock: Inactive"; }
+            }
+        }
+
+        function startGlobalTracking() {
+            if ("geolocation" in navigator) {
+                gpsWatchId = navigator.geolocation.watchPosition((pos) => {
+                    if (pos.coords.accuracy < 40) {
+                        const pt = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`;
+                        if (breadcrumbs[breadcrumbs.length - 1] !== pt) {
+                            breadcrumbs.push(pt);
+                            localStorage.setItem('breadcrumbs', JSON.stringify(breadcrumbs));
+                        }
+                    }
+                }, null, { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 });
+            }
+        }
+
+        async function startNFC() {
+            if ("NDEFReader" in window) {
+                try {
+                    const ndef = new NDEFReader();
+                    await ndef.scan();
+                    ndef.onreading = ({ message, serialNumber }) => {
+                        if (isProcessing) return;
+                        let extractedText = "";
+                        const decoder = new TextDecoder();
+                        for (const record of message.records) {
+                            if (record.recordType === "text") extractedText = decoder.decode(record.data);
+                        }
+                        const tagValue = extractedText || serialNumber;
+                        handleScan(tagValue);
+                        isProcessing = true;
+                        setTimeout(() => isProcessing = false, 3000);
+                    };
+                } catch (e) { console.warn("NFC Read Error", e); }
+            }
+        }
+
+        function handleScan(tagValue) {
+            if (!activeTag) {
+                activeTag = tagValue;
+                localStorage.setItem('activeTag', activeTag);
+                updateUI("Location Active", "Logged at: " + tagValue, 'amber');
+                syncToSheet(tagValue, "IN");
+            } else if (activeTag === tagValue) {
+                syncToSheet(tagValue, "OUT");
+                activeTag = null;
+                breadcrumbs = [];
+                localStorage.removeItem('activeTag');
+                localStorage.removeItem('breadcrumbs');
+                updateUI("Location Cleared", "Ready for next Location", '');
+                setTimeout(() => { if(!activeTag && localStorage.getItem('userName')) updateUI("Shift Active", "Scan NFC to log", ''); }, 2500);
+            } else {
+                updateUI("Wrong Tag!", "Scan " + activeTag + " to exit", 'red');
+                setTimeout(() => { 
+                    if(activeTag) updateUI("Location Active", "Logged at: " + activeTag, 'amber');
+                }, 3000);
+            }
+        }
+
+        async function syncToSheet(tagText, action) {
             let mapLink = "N/A";
-            if (breadcrumbs.length > 0) {
-                // Creates the breadcrumb path link
+            if ((action === "OUT" || action.includes("AUTO")) && breadcrumbs.length > 0) {
                 mapLink = "https://www.google.com/maps/dir/" + breadcrumbs.join("/");
             }
-    
             const payload = { 
-                name: document.getElementById('userName').value,
-                tagId: tagText,
-                action: actionLabel, 
-                location: mapLink,
+                tagText, 
+                name: localStorage.getItem('userName'), 
+                action, 
+                location: mapLink, 
                 timestamp: new Date().toISOString() 
             };
-    
-            try {
-                await fetch(WEB_APP_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
-            } catch (e) { console.error("Sync Error", e); }
+            fetch(WEB_APP_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
         }
-    
-        // --- 4. NFC SCANNER (Modified to block scans after 8am) ---
-        async function startNFC() {
-            const ndef = new NDEFReader();
-            await ndef.scan();
-            ndef.onreading = ({ message, serialNumber }) => {
-                if (isProcessing || !shiftActive) return; 
-                isProcessing = true;
-    
-                let chipText = "";
-                const decoder = new TextDecoder();
-                for (const record of message.records) {
-                    if (record.recordType === "text") chipText = decoder.decode(record.data);
-                }
-                const currentId = chipText || serialNumber;
-    
-                if (!activeTag || activeTag !== currentId) {
-                    activeTag = currentId;
-                    document.body.classList.add('amber');
-                    document.getElementById('status').innerText = "Clocked In";
-                    syncToSheet(currentId, "Clock In");
-                } else {
-                    activeTag = null;
-                    document.body.classList.remove('amber');
-                    document.getElementById('status').innerText = "Clocked Out";
-                    syncToSheet(currentId, "Clock Out");
-                }
-    
-                setTimeout(() => { isProcessing = false; }, 3000);
-            };
+
+        function updateUI(status, sub, bgColorClass) {
+            statusDisplay.innerText = status;
+            subStatus.innerText = sub;
+            body.className = bgColorClass;
         }
-    
-        document.getElementById('startBtn').onclick = async () => {
-            const name = document.getElementById('userName').value;
-            if(!name) return alert("Enter Name");
-            
-            const now = new Date();
-            if (now.getHours() >= 8) return alert("It is past 8:00 AM. Shift cannot be started.");
-    
-            document.getElementById('input-container').style.display = 'none';
-            shiftActive = true;
-            
+
+        function rehydrate() {
+            const savedName = localStorage.getItem('userName');
+            if (!savedName) return;
+
+            activeTag = localStorage.getItem('activeTag');
+            breadcrumbs = JSON.parse(localStorage.getItem('breadcrumbs')) || [];
+
+            inputContainer.style.display = 'none';
+            if (activeTag) {
+                updateUI("Location Active", "Logged: " + activeTag, 'amber');
+            } else {
+                updateUI("Shift Active: " + savedName, "Scan NFC to log", '');
+            }
             startGlobalTracking();
-            await syncToSheet("LOGIN", "Shift Start");
+            startNFC();
+            requestWakeLock();
+        }
+
+        document.getElementById('startBtn').onclick = () => {
+            const name = nameInput.value.trim();
+            if (!name) return alert("Enter name");
+
+            localStorage.setItem('userName', name);
+            localStorage.setItem('shiftStarted', new Date().toISOString());
             
-            try { 
-                await startNFC(); 
-                if ('wakeLock' in navigator) await navigator.wakeLock.request('screen');
-            } catch (e) { alert("Check NFC/HTTPS settings"); }
+            syncToSheet("LOGIN", "SHIFT START");
+            rehydrate();
         };
-        </script>
+
+        window.onload = rehydrate;
+        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') rehydrate(); });
+    </script>
 </body>
 </html>
