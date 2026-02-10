@@ -1,7 +1,6 @@
 self.addEventListener('install', (e) => {
-  self.skipWaiting();
+  e.waitUntil(caches.open('v1').then((cache) => cache.addAll(['index.html'])));
 });
-
 self.addEventListener('fetch', (e) => {
-  e.respondWith(fetch(e.request));
+  e.respondWith(caches.match(e.request).then((res) => res || fetch(e.request)));
 });
