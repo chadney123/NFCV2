@@ -4,8 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Shift Tracker Pro</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#2ecc71">
     <style>
-        /* UI & Animations */
         body { transition: background-color 0.4s; background-color: #2ecc71; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; color: white; text-align: center; overflow: hidden; }
         .amber { background-color: #f39c12 !important; }
         .red { background-color: #e74c3c !important; }
@@ -15,8 +16,7 @@
         
         #input-container { display: flex; flex-direction: column; align-items: center; width: 100%; }
         input { padding: 18px; font-size: 1.4rem; border-radius: 12px; border: none; margin-bottom: 20px; width: 80%; max-width: 300px; text-align: center; color: #333; }
-        button { padding: 20px 50px; font-size: 1.3rem; border-radius: 50px; border: none; background: white; color: #2ecc71; font-weight: bold; cursor: pointer; box-shadow: 0 4px 15px rgba(0,0,0,0.2); transition: transform 0.1s; }
-        button:active { transform: scale(0.95); }
+        button { padding: 20px 50px; font-size: 1.3rem; border-radius: 50px; border: none; background: white; color: #2ecc71; font-weight: bold; cursor: pointer; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
         
         #lock-info { position: fixed; bottom: 15px; font-size: 0.75rem; opacity: 0.6; width: 100%; }
     </style>
@@ -31,36 +31,34 @@
         <button id="startBtn">Begin Shift</button>
     </div>
 
-    <div id="lock-info">Wake Lock: Inactive | Auto-Reset: 08:00 AM | App Ver:V2.2</div>
+    <div id="lock-info">Wake Lock: Inactive | Auto-Reset: 08:00 AM | App Ver 2.2</div>
 
     <script>
         // --- 1. CONFIGURATION ---
         const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyKNPRmEbOlIRyVGN2WyH04jkeMWsnd0dhUpJOKR1ejcm5wK5KDmvGFcrKziFIL3SOm/exec"; 
         
-        // --- 2. GLOBAL STATE ---
+        // --- 2. REGISTRATION & STATE ---
+        if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
+
         let activeTag = null; 
         let breadcrumbs = [];
         let wakeLock = null;
         let gpsWatchId = null;
         let isProcessing = false;
 
-        // --- 3. WAKE LOCK (Keep Screen On) ---
+        // --- 3. HARDWARE & TRACKING ---
         async function requestLock() {
             if ('wakeLock' in navigator) {
                 try {
                     wakeLock = await navigator.wakeLock.request('screen');
                     document.getElementById('lock-info').innerText = "Wake Lock: ACTIVE";
-                } catch (err) {
-                    document.getElementById('lock-info').innerText = "Wake Lock: Permission Denied";
-                }
+                } catch (err) { document.getElementById('lock-info').innerText = "Wake Lock: Support Error"; }
             }
         }
 
-        // --- 4. GPS MOVEMENT TRACKING ---
         function startTracking() {
             if ("geolocation" in navigator) {
                 gpsWatchId = navigator.geolocation.watchPosition((pos) => {
-                    // Accuracy filter: Ignore points worse than 45m
                     if (pos.coords.accuracy < 45) {
                         const pt = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`;
                         if (breadcrumbs[breadcrumbs.length - 1] !== pt) {
@@ -72,35 +70,29 @@
             }
         }
 
-        // --- 5. NFC SCAN LOGIC ---
         async function startNFC() {
             if ("NDEFReader" in window) {
                 try {
                     const ndef = new NDEFReader();
                     await ndef.scan();
                     ndef.onreading = ({ message, serialNumber }) => {
-                        if (isProcessing) return; // Prevent double scans
+                        if (isProcessing) return;
                         isProcessing = true;
-
                         let text = "";
                         const decoder = new TextDecoder();
                         for (const record of message.records) {
                             if (record.recordType === "text") text = decoder.decode(record.data);
                         }
-                        const scannedValue = text || serialNumber;
-                        handleTagLogic(scannedValue);
-                        
+                        handleTagLogic(text || serialNumber);
                         setTimeout(() => { isProcessing = false; }, 3000);
                     };
-                } catch (e) {
-                    alert("NFC Error: Ensure HTTPS is used.");
-                }
+                } catch (e) { console.log("NFC Init Failed"); }
             }
         }
 
+        // --- 4. TAG LOGIC ---
         function handleTagLogic(tagValue) {
             if (!activeTag) {
-                // CLOCK IN
                 activeTag = tagValue;
                 localStorage.setItem('activeTag', activeTag);
                 document.body.className = 'amber';
@@ -108,7 +100,6 @@
                 document.getElementById('sub-status').innerText = "Logged at: " + tagValue;
                 syncToSheet(tagValue, "IN");
             } else if (tagValue === activeTag) {
-                // CLOCK OUT
                 syncToSheet(tagValue, "OUT");
                 activeTag = null;
                 localStorage.removeItem('activeTag');
@@ -118,14 +109,11 @@
                 document.getElementById('status').innerText = "Location Cleared";
                 document.getElementById('sub-status').innerText = "Ready for next scan";
             } else {
-                // WRONG TAG ERROR
                 const correctLocation = activeTag;
                 document.body.className = 'red';
                 document.getElementById('status').innerText = "WRONG TAG!";
-                document.getElementById('sub-status').innerText = "Logged Location: " + correctLocation;
-                
+                document.getElementById('sub-status').innerText = "Must scan: " + correctLocation;
                 if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
-
                 setTimeout(() => {
                     if (activeTag === correctLocation) {
                         document.body.className = 'amber';
@@ -136,79 +124,68 @@
             }
         }
 
-        // --- 6. DATA SYNC ---
+        // --- 5. DATA SYNC ---
         async function syncToSheet(tagText, action) {
             let mapLink = "N/A";
-            // Generate breadcrumb route link on exit
-            if ((action === "OUT" || action.includes("AUTO")) && breadcrumbs.length > 0) {
+            if ((action.includes("OUT")) && breadcrumbs.length > 0) {
                 mapLink = "https://www.google.com/maps/dir/" + breadcrumbs.join("/");
             }
-            
-            const startStr = localStorage.getItem('shiftStartedTime') || "N/A";
-
             const payload = { 
                 tagText: tagText, 
                 name: localStorage.getItem('userName'), 
-                shiftStarted: startStr,
+                shiftStarted: localStorage.getItem('shiftStartedTime') || "N/A",
                 action: action, 
                 location: mapLink
             };
-
             fetch(WEB_APP_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
         }
 
-        // --- 7. AUTO-RESET (8:00 AM) ---
+        // --- 6. AUTO-RESET (8 AM Cutoff) ---
         setInterval(() => {
             const shiftStarted = localStorage.getItem('shiftStartedTime');
             if (shiftStarted) {
                 const now = new Date();
-                if (now.getHours() === 8 && now.getMinutes() === 0) {
-                    if (activeTag) syncToSheet(activeTag, "AUTO-OUT");
-                    localStorage.clear();
-                    location.reload();
+                const resetPerformed = localStorage.getItem('resetDoneToday');
+                const todayKey = now.toLocaleDateString();
+
+                if (now.getHours() >= 8 && resetPerformed !== todayKey) {
+                    handleAutoLogoff(todayKey);
                 }
             }
-        }, 30000);
+        }, 15000);
 
-        // --- 8. LOGIN ACTION ---
+        async function handleAutoLogoff(todayKey) {
+            if (activeTag) await syncToSheet(activeTag, "AUTO-OUT");
+            localStorage.clear();
+            localStorage.setItem('resetDoneToday', todayKey);
+            alert("Shift Reset for the day.");
+            location.reload();
+        }
+
+        // --- 7. BUTTON & LOAD ---
         document.getElementById('startBtn').onclick = async () => {
             const name = document.getElementById('userName').value.trim();
-            if(!name) return alert("Please enter your name.");
-
+            if(!name) return alert("Enter Name");
             localStorage.setItem('userName', name);
-            const timeStr = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
-            localStorage.setItem('shiftStartedTime', timeStr);
-
+            localStorage.setItem('shiftStartedTime', new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'}));
             document.getElementById('input-container').style.display = 'none';
             document.getElementById('status').innerText = "Shift Active";
             document.getElementById('sub-status').innerText = "Scan NFC to log movement";
-
             await requestLock();
             startTracking();
             await startNFC();
             syncToSheet("START", "SHIFT START");
         };
 
-        // --- 9. REHYDRATE (Page Refresh) ---
         window.onload = () => {
             const savedName = localStorage.getItem('userName');
             if (savedName) {
                 document.getElementById('input-container').style.display = 'none';
                 activeTag = localStorage.getItem('activeTag');
                 breadcrumbs = JSON.parse(localStorage.getItem('breadcrumbs')) || [];
-                
-                if (activeTag) {
-                    document.body.className = 'amber';
-                    document.getElementById('status').innerText = "Location Active";
-                    document.getElementById('sub-status').innerText = "Logged at: " + activeTag;
-                } else {
-                    document.getElementById('status').innerText = "Shift Active";
-                    document.getElementById('sub-status').innerText = "Scan NFC to log movement";
-                }
-
-                requestLock();
-                startTracking();
-                startNFC();
+                document.getElementById('status').innerText = activeTag ? "Location Active" : "Shift Active";
+                if(activeTag) document.body.className = 'amber';
+                requestLock(); startTracking(); startNFC();
             }
         };
     </script>
